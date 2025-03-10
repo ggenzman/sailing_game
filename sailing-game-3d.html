@@ -1,0 +1,337 @@
+<!--
+Below is a 3D version of your sailing game using Three.js. It preserves the original mechanics:
+- Arrow keys steer the boat.
+- Space bar fires broadside cannons.
+- Random wind direction changes.
+- Enemy boats you can sink.
+
+IMPORTANT:
+1. This code references a CDN for Three.js. You must be online or download Three.js locally.
+2. Because of how Three.js works, you’ll need to run this file on a local server (rather than opening via file://) for textures/CDN to load.
+3. The logic (steering, collisions, etc.) remains the same, but now visually displayed in 3D.
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sailing Game 3D</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Hide scrollbars */
+        }
+        #instructions-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 9999;
+        }
+        #instructions-content {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            max-width: 400px;
+            text-align: center;
+        }
+        #close-instructions {
+            margin-top: 15px;
+            padding: 10px 20px;
+            border: none;
+            background: #4CAF50;
+            color: white;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        #close-instructions:hover {
+            background: #45A049;
+        }
+
+        #windInfo {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 20px;
+            font-weight: bold;
+            color: #333;
+            background: rgba(255,255,255,0.7);
+            padding: 5px 10px;
+            border-radius: 5px;
+            z-index: 999;
+        }
+        #status-message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 36px;
+            font-weight: bold;
+            color: #4CAF50;
+            display: none;
+            z-index: 9999;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Instructions Modal -->
+    <div id="instructions-modal">
+        <div id="instructions-content">
+            <h2>Sailing Game Instructions</h2>
+            <p>Use <strong>Arrow Left</strong> and <strong>Arrow Right</strong> to steer your ship.</p>
+            <p>Press <strong>Space</strong> to fire a broadside cannon shot.</p>
+            <p>Sink the enemy ships to win!</p>
+            <button id="close-instructions">OK, Let's Sail!</button>
+        </div>
+    </div>
+
+    <div id="windInfo">Wind: ???</div>
+    <div id="status-message">You Win!</div>
+
+    <!-- Three.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
+
+    <script>
+        // HTML elements
+        const instructionsModal = document.getElementById('instructions-modal');
+        const closeInstructionsBtn = document.getElementById('close-instructions');
+        const windInfo = document.getElementById('windInfo');
+        const statusMessage = document.getElementById('status-message');
+
+        // Scene, Camera, Renderer
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb); // sky-blue background
+
+        const camera = new THREE.PerspectiveCamera(
+            60, // FOV
+            window.innerWidth / window.innerHeight,
+            0.1,
+            10000
+        );
+        camera.position.set(0, 200, 400);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Basic "water" plane
+        const waterGeometry = new THREE.PlaneGeometry(2000, 2000, 10, 10);
+        const waterMaterial = new THREE.MeshBasicMaterial({ color: 0x1ca3ec });
+        const waterMesh = new THREE.Mesh(waterGeometry, waterMaterial);
+        waterMesh.rotation.x = -Math.PI / 2; // horizontal plane
+        scene.add(waterMesh);
+
+        // Key game data
+        let windDirection = 90; // degrees
+        let cannonBalls = [];
+
+        // Boat class to hold position, angle, mesh, etc.
+        class Boat {
+            constructor(x, z, color = 0xffffff) {
+                // store game logic data
+                this.x = x;
+                this.z = z;
+                this.angle = 0;
+                this.speed = 0;
+                this.radius = 25;
+                // 3D mesh
+                const boatGeometry = new THREE.BoxGeometry(20, 10, 50);
+                const boatMaterial = new THREE.MeshLambertMaterial({ color });
+                this.mesh = new THREE.Mesh(boatGeometry, boatMaterial);
+                // pivot at center, so we can rotate easily around Y-axis
+                this.mesh.position.set(this.x, 5, this.z); // slightly above water
+                scene.add(this.mesh);
+            }
+
+            updatePosition() {
+                // apply to XZ, interpret angle as degrees around Y-axis
+                this.mesh.rotation.y = -THREE.Math.degToRad(this.angle); // invert sign for typical 3D coords
+                this.x += this.speed * Math.sin(THREE.Math.degToRad(this.angle));
+                this.z -= this.speed * Math.cos(THREE.Math.degToRad(this.angle));
+                this.mesh.position.set(this.x, 5, this.z);
+
+                // wrap edges
+                const limit = 1000;
+                if (this.x < -limit) this.x = limit;
+                else if (this.x > limit) this.x = -limit;
+                if (this.z < -limit) this.z = limit;
+                else if (this.z > limit) this.z = -limit;
+            }
+        }
+
+        // Create player's boat
+        const playerBoat = new Boat(100, -100, 0xffffff);
+
+        // Enemy boats
+        let enemyBoats = [
+            new Boat(200, 200, 0xff0000),
+            new Boat(-200, 300, 0xff0000)
+        ];
+        enemyBoats.forEach(e => {
+            e.angle = Math.random() * 360;
+        });
+
+        // Cannonball class
+        class CannonBall {
+            constructor(x, z, angle) {
+                this.x = x;
+                this.z = z;
+                this.angle = angle;
+                this.speed = 4;
+                this.radius = 5; // for collisions
+                // Mesh
+                const geometry = new THREE.SphereGeometry(5, 8, 8);
+                const material = new THREE.MeshBasicMaterial({ color: 0x000000 });
+                this.mesh = new THREE.Mesh(geometry, material);
+                this.mesh.position.set(this.x, 5, this.z);
+                scene.add(this.mesh);
+            }
+
+            update() {
+                this.x += this.speed * Math.sin(THREE.Math.degToRad(this.angle));
+                this.z -= this.speed * Math.cos(THREE.Math.degToRad(this.angle));
+                this.mesh.position.set(this.x, 5, this.z);
+            }
+        }
+
+        // Speed Calculation Based on Point of Sail
+        function calculateSpeed(angleDiff) {
+            angleDiff = Math.min(angleDiff, 360 - angleDiff);
+            if (angleDiff <= 30) return 0;     // In irons
+            if (angleDiff <= 45) return 1;     // Close-hauled (slow)
+            if (angleDiff <= 90) return 3;     // Beam reach (fastest)
+            if (angleDiff <= 135) return 2;    // Broad reach (medium)
+            if (angleDiff <= 180) return 1.5;  // Running downwind (moderate)
+        }
+
+        // Collision check between boat and cannonball
+        function checkBoatHit(boat, ball) {
+            const dx = boat.x - ball.x;
+            const dz = boat.z - ball.z;
+            const dist = Math.sqrt(dx * dx + dz * dz);
+            return dist < (boat.radius + ball.radius);
+        }
+
+        // Randomize wind direction every 5 seconds
+        function changeWindDirection() {
+            windDirection = Math.floor(Math.random() * 360);
+        }
+        setInterval(changeWindDirection, 5000);
+
+        // Key handling
+        let keys = {};
+        window.addEventListener('keydown', (event) => {
+            keys[event.key] = true;
+            // Fire cannon if space
+            if (event.key === ' ') {
+                const side = Math.random() < 0.5 ? -1 : 1;
+                // broadside angle
+                const shotAngle = (playerBoat.angle + side * 90 + 360) % 360;
+                const ball = new CannonBall(playerBoat.x + side * 15, playerBoat.z, shotAngle);
+                cannonBalls.push(ball);
+            }
+        });
+        window.addEventListener('keyup', (event) => {
+            keys[event.key] = false;
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // handle player input
+            if (keys['ArrowLeft']) {
+                playerBoat.angle = (playerBoat.angle - 2 + 360) % 360;
+            }
+            if (keys['ArrowRight']) {
+                playerBoat.angle = (playerBoat.angle + 2) % 360;
+            }
+
+            // update speeds
+            const angleDiff = Math.abs((playerBoat.angle - windDirection + 360) % 360);
+            playerBoat.speed = calculateSpeed(angleDiff);
+
+            // update player boat
+            playerBoat.updatePosition();
+
+            // update enemy boats
+            enemyBoats.forEach((enemy) => {
+                enemy.angle = (enemy.angle + (Math.random() * 6 - 3) + 360) % 360; // slight random wander
+                const eAngleDiff = Math.abs((enemy.angle - windDirection + 360) % 360);
+                enemy.speed = calculateSpeed(eAngleDiff);
+                enemy.updatePosition();
+            });
+
+            // update cannonballs
+            for (let i = cannonBalls.length - 1; i >= 0; i--) {
+                const ball = cannonBalls[i];
+                ball.update();
+
+                // remove if it goes out of bounds
+                if (ball.x < -1100 || ball.x > 1100 || ball.z < -1100 || ball.z > 1100) {
+                    scene.remove(ball.mesh);
+                    cannonBalls.splice(i, 1);
+                    continue;
+                }
+
+                // check collisions with enemy boats
+                for (let j = enemyBoats.length - 1; j >= 0; j--) {
+                    if (checkBoatHit(enemyBoats[j], ball)) {
+                        // remove boat
+                        scene.remove(enemyBoats[j].mesh);
+                        enemyBoats.splice(j, 1);
+                        // remove cannonball
+                        scene.remove(ball.mesh);
+                        cannonBalls.splice(i, 1);
+                        break;
+                    }
+                }
+            }
+
+            // check if all enemy boats gone => you win!
+            if (enemyBoats.length === 0) {
+                statusMessage.style.display = 'block';
+            }
+
+            // update wind info
+            windInfo.textContent = `Wind: ${windArrow(windDirection)} (${windDirection}°)`;
+
+            renderer.render(scene, camera);
+        }
+
+        // Show instructions modal on load, start game after close
+        closeInstructionsBtn.addEventListener('click', () => {
+            instructionsModal.style.display = 'none';
+            animate();
+        });
+
+        // Add some lighting for 3D
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        dirLight.position.set(0, 100, 50);
+        scene.add(dirLight);
+
+        // Utility to show wind arrow symbol
+        function windArrow(angle) {
+            const arrows = ['↓', '↙', '←', '↖', '↑', '↗', '→', '↘'];
+            return arrows[Math.round(angle / 45) % 8];
+        }
+    </script>
+</body>
+</html>
